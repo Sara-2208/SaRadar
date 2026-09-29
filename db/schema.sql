@@ -4,16 +4,22 @@
 PRAGMA foreign_keys = ON;
 
 -- User profile (single row: id=1 convention for single-user app)
+-- profile_json stores the full Profile Pydantic model JSON; the legacy
+-- name/email/skills/experience/education columns are kept for SQL queries.
 CREATE TABLE IF NOT EXISTS profile (
-    id          INTEGER PRIMARY KEY,
-    name        TEXT,
-    email       TEXT,
-    skills      TEXT,           -- JSON string: ["Python", "PyTorch", ...]
-    experience  TEXT,           -- JSON string: [{company, title, dates, bullets[]}, ...]
-    education   TEXT,           -- JSON string: [{school, degree, field, year}, ...]
-    raw_text    TEXT,           -- Full raw resume text for reference
-    updated_at  TEXT            -- ISO-8601 UTC timestamp
+    id           INTEGER PRIMARY KEY,
+    name         TEXT,
+    email        TEXT,
+    skills       TEXT,           -- JSON string: flat [] of unique skills (all_skills)
+    experience   TEXT,           -- JSON string: Profile.experience (list of objects)
+    education    TEXT,           -- JSON string: Profile.education  (list of objects)
+    raw_text     TEXT,           -- Full raw resume text for reference
+    profile_json TEXT,           -- Full Profile.model_dump_json() (authoritative)
+    updated_at   TEXT            -- ISO-8601 UTC timestamp
 );
+
+-- If you created profile *before* profile_json existed, run once:
+-- ALTER TABLE profile ADD COLUMN profile_json TEXT;
 
 -- Jobs sourced from APIs and Gmail alerts
 CREATE TABLE IF NOT EXISTS jobs (

@@ -219,3 +219,7 @@ __marimo__/
 
 # SQLite databases in data folder (keep .gitkeep)
 data/*.db
+
+# Uploaded resumes (never commit user data)
+data/*.pdf
+data/*.docx

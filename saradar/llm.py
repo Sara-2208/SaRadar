@@ -150,6 +150,7 @@ def _call_groq(
     system: Optional[str],
     json_mode: bool,
     timeout_seconds: int,
+    max_tokens: int,
 ) -> str:
     """Call Groq chat completion via the official ``groq`` SDK.
 
@@ -175,6 +176,7 @@ def _call_groq(
         "model": model_id,
         "messages": messages,
         "temperature": 0.0,
+        "max_tokens": max_tokens,
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
@@ -189,6 +191,7 @@ def _call_gemini(
     system: Optional[str],
     json_mode: bool,
     timeout_seconds: int,
+    max_tokens: int,
 ) -> str:
     """Call Gemini via the *new* ``google-genai`` SDK using ``types.GenerateContentConfig``."""
     from google.genai import types
@@ -204,6 +207,7 @@ def _call_gemini(
     config_kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(
         disable=True,
     )
+    config_kwargs["max_output_tokens"] = max_tokens
     config = types.GenerateContentConfig(**config_kwargs)
 
     response = client.models.generate_content(
@@ -226,6 +230,7 @@ def _try_model(
     json_mode: bool,
     timeout_seconds: int,
     max_retries: int,
+    max_tokens: int,
 ) -> Tuple[Optional[str], Optional[str], bool]:
     """Attempt *one* model spec with retry logic.
 
@@ -246,9 +251,9 @@ def _try_model(
     for attempt in range(1, total_attempts + 1):
         try:
             if provider.lower() == "groq":
-                text = _call_groq(model_id, prompt, system, json_mode, timeout_seconds)
+                text = _call_groq(model_id, prompt, system, json_mode, timeout_seconds, max_tokens)
             elif provider.lower() == "gemini":
-                text = _call_gemini(model_id, prompt, system, json_mode, timeout_seconds)
+                text = _call_gemini(model_id, prompt, system, json_mode, timeout_seconds, max_tokens)
             else:
                 return None, f"unknown provider: {provider}", False
             return text, None, False
@@ -287,6 +292,7 @@ def complete(
     system: Optional[str] = None,
     tier: str = "fast",
     json_mode: bool = False,
+    max_tokens: Optional[int] = None,
     preferences: Optional[Dict[str, Any]] = None,
 ) -> LLMResult:
     """Call the best-available model in ``tier`` with automatic fallback.
@@ -298,6 +304,8 @@ def complete(
         json_mode: Ask the provider to return JSON (via response_format / mime type).
             Note: you are strongly encouraged to also include the word "JSON" in
             the prompt or system prompt for best results.
+        max_tokens: Override the output token budget. Defaults are generous:
+            4096 for ``json_mode=True``, 2048 otherwise.
         preferences: Optional pre-loaded preferences dict (auto-loaded if None).
 
     Returns:
@@ -315,6 +323,8 @@ def complete(
 
     timeout = cfg["timeout_seconds"]
     max_retries = cfg["max_retries"]
+    if max_tokens is None:
+        max_tokens = 4096 if json_mode else 2048
     attempts: List[FailedAttempt] = []
     effective_prompt = prompt
 
@@ -340,6 +350,7 @@ def complete(
         # 3) Try the model (with retries for 5xx/timeout)
         text, fail_reason, was_429 = _try_model(
             model_spec, effective_prompt, system, json_mode, timeout, max_retries,
+            max_tokens,
         )
 
         if was_429:
@@ -381,6 +392,7 @@ def complete(
             # Exactly one extra try (no further retries) so force max_retries=0
             text2, fail2, was_429_2 = _try_model(
                 model_spec, retry_prompt, system, json_mode, timeout, max_retries=0,
+                max_tokens=max_tokens,
             )
             if was_429_2 and model_spec not in _cooldown:
                 _cooldown[model_spec] = datetime.utcnow() + timedelta(minutes=60)

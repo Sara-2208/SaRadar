@@ -77,6 +77,8 @@ run(
 
 # ---------------------------------------------------------------------------
 # 4. Bonus: complete_json() variant returning a parsed dict
+#    Header format is kept identical to the run() helper above so every
+#    section always prints "Model used" + fallbacks + payload.
 # ---------------------------------------------------------------------------
 print(f"\n{'=' * 60}")
 print("  Fast tier (complete_json -> parsed dict)")
@@ -85,9 +87,16 @@ try:
     data, result = llm.complete_json(
         "Return a JSON object with keys: color (3 hex strings), shape (3 types)"
     )
-    print(f"Model used : {result.model_used}")
-    print(f"Parsed dict: {data}")
 except llm.AllModelsFailed as e:
-    print(f"❌ All models failed. {len(e.attempts)} attempts")
+    print(f"❌ All models failed. {len(e.attempts)} attempts:")
     for a in e.attempts:
         print(f"   ✗ {a.model_spec}: {a.reason}")
+else:
+    print(f"Model used : {result.model_used}")
+    if result.attempts:
+        print(f"Fallbacks  : {len(result.attempts)}")
+        for a in result.attempts:
+            print(f"   ✗ {a.model_spec}: {a.reason}")
+    else:
+        print("Fallbacks  : (none)")
+    print(f"Parsed dict: {data}")

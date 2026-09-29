@@ -78,14 +78,14 @@ class ProviderSpy:
         self.gem_calls: list[tuple] = []
 
     def install(self, monkeypatch):
-        def groq_fn(model_id, prompt, system, json_mode, timeout_seconds):
+        def groq_fn(model_id, prompt, system, json_mode, timeout_seconds, max_tokens=None):
             self.groq_calls.append((model_id, prompt, system, json_mode, timeout_seconds))
             if model_id in self.groq_raises:
                 err = self.groq_raises[model_id]
                 raise err if not isinstance(err, type) else err()
             return self.groq_returns.get(model_id, "")
 
-        def gem_fn(model_id, prompt, system, json_mode, timeout_seconds):
+        def gem_fn(model_id, prompt, system, json_mode, timeout_seconds, max_tokens=None):
             self.gem_calls.append((model_id, prompt, system, json_mode, timeout_seconds))
             if model_id in self.gem_raises:
                 err = self.gem_raises[model_id]
