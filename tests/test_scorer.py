@@ -124,3 +124,11 @@ def test_label_capped_when_role_above_entry_level():
     assert label == "Fair fit" and note
     label, note = sc._label(82, seniority_score=1.0)
     assert label == "Strong fit" and note is None
+
+
+
+def test_two_year_gap_caps_score_as_stretch():
+    fit = sc.score_fit(PROFILE, _req(years_experience_min=2), preferences=PREFS)
+    assert fit.score <= 45
+    assert fit.label == "Stretch"
+    assert any("Capped" in n for n in fit.notes)

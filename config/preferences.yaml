@@ -29,6 +29,7 @@ skip_title_keywords:
 
 # Minimum fit score (0-100) required to trigger a Telegram alert
 fit_alert_threshold: 70
+candidate_years_experience: 0
 
 # LLM configuration
 # Model tiers: fast (cheap/low-latency streaming), smart (deep reasoning).

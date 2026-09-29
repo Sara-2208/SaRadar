@@ -80,9 +80,9 @@ KLANG_VALLEY = [
     "mont kiara", "damansara", "cheras", "trx",
 ]
 
-_LEVEL_SCORE = {  # entry-level candidate who does NOT want internships
-    "intern": 0.4, "entry": 1.0, "junior": 1.0, "mid": 0.6,
-    "senior": 0.25, "lead": 0.15, "manager": 0.1,
+_LEVEL_SCORE = {  # candidate with ~0 years who does NOT want internships
+    "intern": 0.4, "entry": 1.0, "junior": 1.0, "mid": 0.4,
+    "senior": 0.15, "lead": 0.1, "manager": 0.05,
 }
 _TITLE_LEVEL = [
     (r"\b(head|director|principal|vp)\b", "manager"),
@@ -301,21 +301,23 @@ def _match(
 # ---------------------------------------------------------------------------
 
 
-def _years_score(years: Optional[int]) -> Optional[float]:
-    if years is None:
+def _years_score(required: Optional[int], candidate: int = 0) -> Optional[float]:
+    """Score by the gap between required years and the candidate's years."""
+    if required is None:
         return None
-    if years <= 1:
+    gap = required - candidate
+    if gap <= 0:
         return 1.0
-    if years == 2:
-        return 0.8
-    if years == 3:
-        return 0.55
-    if years <= 5:
-        return 0.35
-    return 0.15
+    if gap == 1:
+        return 0.6
+    if gap == 2:
+        return 0.25
+    if gap == 3:
+        return 0.1
+    return 0.05
 
 
-def _seniority(req: JobRequirements) -> Tuple[float, Optional[str]]:
+def _seniority(req: JobRequirements, candidate_years: int = 0) -> Tuple[float, Optional[str]]:
     scores: List[float] = []
     note = None
     level = (req.seniority or "").strip().lower()
@@ -326,11 +328,12 @@ def _seniority(req: JobRequirements) -> Tuple[float, Optional[str]]:
         if re.search(pattern, title):
             scores.append(_LEVEL_SCORE[lvl])
             break
-    ys = _years_score(req.years_experience_min)
+    ys = _years_score(req.years_experience_min, candidate_years)
     if ys is not None:
         scores.append(ys)
-        if req.years_experience_min and req.years_experience_min >= 2:
-            note = f"Asks for {req.years_experience_min}+ years of experience"
+        if req.years_experience_min and req.years_experience_min > candidate_years:
+            note = (f"Asks for {req.years_experience_min}+ years of experience "
+                    f"(you have {candidate_years})")
     return (min(scores) if scores else 0.75), note
 
 
@@ -399,7 +402,8 @@ def score_fit(
         notes.append("No clear must-have skills listed; used overall similarity instead")
     nice_score = sum(m.credit for m in nice) / len(nice) if nice else 0.75
 
-    sen_score, sen_note = _seniority(req)
+    candidate_years = int(prefs.get("candidate_years_experience", 0))
+    sen_score, sen_note = _seniority(req, candidate_years)
     loc_score, loc_note = _location(req, prefs)
     notes += [n for n in (sen_note, loc_note) if n]
 
@@ -412,6 +416,15 @@ def score_fit(
     }
     total = sum(weights[k] * v for k, v in components.items()) / sum(weights[k] for k in components)
     score = round(total * 100)
+
+    # Experience-gap caps: skills can't hide a big experience gap
+    if req.years_experience_min is not None:
+        gap = req.years_experience_min - candidate_years
+        if gap >= 2:
+            score = min(score, 45)
+            notes.append(f"Capped: {gap} years more experience required than you have")
+        elif gap == 1:
+            score = min(score, 74)
     label, cap_note = _label(score, sen_score)
     if cap_note:
         notes.append(cap_note)
