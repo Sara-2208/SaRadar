@@ -1,342 +1,282 @@
-"""👤 Profile page — upload resume, edit fields, save to DB.
+"""👤 Profile page: upload resume, review/edit every field, save to DB.
 
-Run via Streamlit: ``streamlit run app/Home.py`` → navigate to Profile.
+Run: streamlit run app/Home.py  -> Profile
 """
 
 from __future__ import annotations
 
-import json
+import re
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
+import pandas as pd
 import streamlit as st
 from pydantic import ValidationError
 
-# Make imports work whether launched as module or via `streamlit run app/Home.py`
-import sys as _sys
-_ROOT = Path(__file__).resolve().parent.parent.parent
-if str(_ROOT) not in _sys.path:
-    _sys.path.insert(0, str(_ROOT))
+ROOT = Path(__file__).resolve().parent.parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from saradar import db as db_mod  # noqa: E402
-from saradar import resume_parser  # noqa: E402
+from saradar import resume_parser as rp  # noqa: E402
 from saradar.schemas import (  # noqa: E402
+    ActivityEntry,
     EducationEntry,
     ExperienceEntry,
+    Links,
     Profile,
     ProjectEntry,
     ScannedPDFError,
     SkillGroup,
 )
 
-st.set_page_config(page_title="Profile", page_icon="👤")
+st.set_page_config(page_title="Profile · SaRadar", page_icon="👤", layout="wide")
 st.title("👤 Profile")
+st.caption("Upload your resume, check every field, then save. SaRadar never invents experience.")
 
 # ---------------------------------------------------------------------------
-# DB init + session state bootstrap
+# State
 # ---------------------------------------------------------------------------
 
 db_mod.init_db()
+ss = st.session_state
+if "profile" not in ss:
+    ss.profile = db_mod.load_profile() or Profile()
+ss.setdefault("form_version", 0)   # bump to refresh all widgets after parse/reload
+ss.setdefault("parse_info", None)  # {"models": [...], "warnings": [...], "chars": int}
+ss.setdefault("resume_text", None)
+ss.setdefault("unsaved", False)
 
-if "profile" not in st.session_state:
-    loaded = db_mod.load_profile()
-    st.session_state.profile = loaded or Profile()
-if "last_llm_model" not in st.session_state:
-    st.session_state.last_llm_model = None
-if "resume_raw_text" not in st.session_state:
-    st.session_state.resume_raw_text = None
-
-profile: Profile = st.session_state.profile
+profile: Profile = ss.profile
+v = ss.form_version
 
 
 # ---------------------------------------------------------------------------
-# Sidebar — resume upload + AI parse
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _clean(val: Any) -> str | None:
+    """Empty / NaN / None -> None, else stripped string."""
+    if val is None:
+        return None
+    if not isinstance(val, str) and pd.isna(val):
+        return None
+    text = str(val).strip()
+    return text or None
+
+
+def _split_csv(raw: str) -> list[str]:
+    """Split on commas, but not commas inside brackets: 'VM (a, b)' stays one item."""
+    parts = re.split(r",\s*(?![^()]*\))", raw or "")
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _split_lines(raw: str) -> list[str]:
+    return [line.strip() for line in (raw or "").splitlines() if line.strip()]
+
+
+def _table(rows: list[dict], cols: list[str], labels: dict[str, str], key: str) -> list[dict]:
+    """Editable table. Returns cleaned rows, dropping fully empty ones."""
+    df = pd.DataFrame(rows, columns=cols)
+    cfg = {c: st.column_config.TextColumn(labels.get(c, c.capitalize())) for c in cols}
+    edited = st.data_editor(df, num_rows="dynamic", hide_index=True, column_config=cfg, key=key)
+    out = []
+    for rec in edited.to_dict("records"):
+        row = {c: _clean(rec.get(c)) for c in cols}
+        if any(row.values()):
+            out.append(row)
+    return out
+
+
+def _bullet_editors(rows: list[dict], originals: list, label: str, key_prefix: str) -> list[list[str]]:
+    """One expander per row with a bullets text area."""
+    result = []
+    for i, row in enumerate(rows):
+        orig = originals[i].bullets if i < len(originals) else []
+        title = row.get(label) or "(untitled)"
+        with st.expander(f"📝 {title}: bullets"):
+            raw = st.text_area(
+                "One bullet per line",
+                value="\n".join(orig),
+                height=110,
+                key=f"{key_prefix}_{v}_{i}",
+            )
+        result.append(_split_lines(raw))
+    return result
+
+
+def _rows(items: list, cols: list[str]) -> list[dict]:
+    return [{c: (getattr(item, c) or "") for c in cols} for item in items]
+
+
+# ---------------------------------------------------------------------------
+# Sidebar: upload + parse
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.header("📥 Upload Resume")
-    uploaded = st.file_uploader("PDF resume", type=["pdf"], key="profile_pdf_upload")
-    parse_btn = st.button("🔍 Parse resume with AI", type="primary", disabled=uploaded is None)
-
-    if parse_btn and uploaded is not None:
+    st.header("📥 Upload resume")
+    uploaded = st.file_uploader("PDF only", type=["pdf"], key="resume_upload")
+    if st.button("🔍 Parse with AI", type="primary", disabled=uploaded is None):
         try:
-            file_bytes = uploaded.getvalue()
-            with st.spinner("Extracting text from PDF…"):
-                text = resume_parser.extract_text(file_bytes)
-            st.session_state.resume_raw_text = text
-            with st.spinner("Parsing with AI… (may take 5–15s)"):
-                new_profile, llm_result = resume_parser.parse_resume(text)
-            st.session_state.profile = new_profile
-            st.session_state.last_llm_model = llm_result.model_used
-            st.success(f"✅ Parsed successfully using {llm_result.model_used}")
-            st.rerun()
+            with st.spinner("Reading PDF…"):
+                text = rp.extract_text(uploaded.getvalue())
+            with st.spinner("Extracting your profile with AI (10 to 30s)…"):
+                outcome = rp.parse_resume_full(text)
         except ScannedPDFError as e:
             st.error(f"⚠️ {e}")
         except Exception as e:  # noqa: BLE001
             st.error(f"❌ AI parsing failed: {e}")
+        else:
+            ss.profile = outcome.profile
+            ss.resume_text = rp._strip_references(text)  # never store referees
+            ss.parse_info = {
+                "models": outcome.models_used,
+                "warnings": outcome.warnings,
+                "chars": len(text),
+            }
+            ss.unsaved = True
+            ss.form_version += 1
+            st.rerun()
 
-    if st.session_state.last_llm_model:
+    if ss.parse_info:
         st.caption(
-            f"Last parsed using: `{st.session_state.last_llm_model}`"
-            + (
-                f" · Resume text: {len(st.session_state.resume_raw_text)} chars"
-                if st.session_state.resume_raw_text
-                else ""
-            )
+            f"Parsed with: {', '.join(ss.parse_info['models'])} · "
+            f"{ss.parse_info['chars']} chars"
         )
 
+    st.divider()
+    if st.button("↩️ Discard changes (reload saved)"):
+        ss.profile = db_mod.load_profile() or Profile()
+        ss.parse_info = None
+        ss.unsaved = False
+        ss.form_version += 1
+        st.rerun()
+
 
 # ---------------------------------------------------------------------------
-# Main UI: split into two columns
+# Banners
 # ---------------------------------------------------------------------------
 
-c1, c2 = st.columns([1, 1])
+if ss.unsaved:
+    st.info("🟡 Parsed but **not saved yet**. Review each tab, then click **Save profile** at the bottom.")
+if ss.parse_info:
+    for w in ss.parse_info["warnings"]:
+        st.warning(f"⚠️ {w}")
 
-# ---- Column 1 — basics + skills -------------------------------------------
 
-with c1:
-    st.subheader("📋 Basics")
-    name = st.text_input("Name", value=profile.name or "", placeholder="e.g. Amirah Rahman")
-    email = st.text_input("Email", value=profile.email or "", placeholder="you@example.com")
-    phone = st.text_input("Phone", value=profile.phone or "", placeholder="+60 12-345 6789")
-    location = st.text_input("Location", value=profile.location or "", placeholder="Kuala Lumpur, Malaysia")
-    summary = st.text_area(
-        "Professional summary",
-        value=profile.summary or "",
-        height=130,
-        placeholder="2–3 sentences on your focus and expertise…",
-    )
+# ---------------------------------------------------------------------------
+# Tabs
+# ---------------------------------------------------------------------------
+
+t_basic, t_exp, t_edu, t_proj, t_act = st.tabs(
+    ["📋 Basics & Skills", "💼 Experience", "🎓 Education", "🏆 Projects", "🌟 Activities"]
+)
+
+with t_basic:
+    c1, c2 = st.columns(2)
+    with c1:
+        name = st.text_input("Name", value=profile.name or "", key=f"name_{v}")
+        headline = st.text_input("Headline", value=profile.headline or "", key=f"headline_{v}")
+        email = st.text_input("Email", value=profile.email or "", key=f"email_{v}")
+        phone = st.text_input("Phone", value=profile.phone or "", key=f"phone_{v}")
+        location = st.text_input("Location", value=profile.location or "",
+                                 placeholder="e.g. Kuala Lumpur", key=f"location_{v}")
+    with c2:
+        github = st.text_input("GitHub", value=profile.links.github or "", key=f"github_{v}")
+        linkedin = st.text_input("LinkedIn", value=profile.links.linkedin or "", key=f"linkedin_{v}")
+        portfolio = st.text_input("Portfolio", value=profile.links.portfolio or "", key=f"portfolio_{v}")
+        summary = st.text_area("Summary", value=profile.summary or "", height=150, key=f"summary_{v}")
 
     st.subheader("🛠️ Skills")
-    tech_raw = st.text_area(
-        "Technical (comma separated)",
-        value=", ".join(profile.skills.technical),
-        height=90,
-        placeholder="Python, SQL, PyTorch, TensorFlow…",
-    )
-    tools_raw = st.text_area(
-        "Tools & Platforms (comma separated)",
-        value=", ".join(profile.skills.tools),
-        height=80,
-        placeholder="Docker, AWS, GCP, MLflow…",
-    )
-    soft_raw = st.text_area(
-        "Soft skills (comma separated)",
-        value=", ".join(profile.skills.soft),
-        height=70,
-        placeholder="Leadership, Communication, Cross-functional…",
-    )
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        tech_raw = st.text_area("Programming languages (comma separated)",
+                                value=", ".join(profile.skills.technical), height=120, key=f"tech_{v}")
+    with s2:
+        tools_raw = st.text_area("Tools & platforms (comma separated)",
+                                 value=", ".join(profile.skills.tools), height=120, key=f"tools_{v}")
+    with s3:
+        soft_raw = st.text_area("Soft skills (comma separated)",
+                                value=", ".join(profile.skills.soft), height=120, key=f"soft_{v}")
 
+    l1, l2 = st.columns(2)
+    with l1:
+        certs_raw = st.text_area("🏅 Certifications (one per line)",
+                                 value="\n".join(profile.certifications), height=100, key=f"certs_{v}")
+    with l2:
+        langs_raw = st.text_area("🌍 Languages (one per line)",
+                                 value="\n".join(profile.languages), height=100, key=f"langs_{v}")
 
-# ---- Column 2 — experience / education / projects via data_editor ---------
+with t_exp:
+    exp_cols = ["title", "company", "location", "start", "end"]
+    exp_rows = _table(_rows(profile.experience, exp_cols), exp_cols, {}, key=f"exp_{v}")
+    exp_bullets = _bullet_editors(exp_rows, profile.experience, "title", "expb")
 
-def _bullets_to_text(bullets: list[str]) -> str:
-    return "\n".join(b or "" for b in bullets)
+with t_edu:
+    edu_cols = ["degree", "field", "institution", "start", "end", "grade"]
+    edu_rows = _table(_rows(profile.education, edu_cols), edu_cols, {}, key=f"edu_{v}")
+    edu_bullets = _bullet_editors(edu_rows, profile.education, "degree", "edub")
 
+with t_proj:
+    st.caption("Projects, competitions and hackathons. Result = e.g. Champion, Top 10 Finalist.")
+    proj_cols = ["name", "role", "result", "level", "date", "description", "tech"]
+    proj_src = [
+        {**{c: (getattr(p, c) or "") for c in proj_cols if c != "tech"}, "tech": ", ".join(p.tech)}
+        for p in profile.projects
+    ]
+    proj_rows = _table(proj_src, proj_cols, {"tech": "Tech (comma separated)"}, key=f"proj_{v}")
 
-def _text_to_bullets(text: str) -> list[str]:
-    return [line.strip() for line in text.splitlines() if line.strip()]
-
-
-def _split_csv(raw: str) -> list[str]:
-    return [s.strip() for s in raw.split(",") if s.strip()]
-
-
-with c2:
-    st.subheader("💼 Experience")
-    exp_df_rows: list[dict] = []
-    for e in profile.experience:
-        exp_df_rows.append(
-            {
-                "title": e.title or "",
-                "company": e.company or "",
-                "location": e.location or "",
-                "start": e.start or "",
-                "end": e.end or "",
-            }
-        )
-    exp_config = {
-        "title": st.column_config.TextColumn("Title"),
-        "company": st.column_config.TextColumn("Company"),
-        "location": st.column_config.TextColumn("Location"),
-        "start": st.column_config.TextColumn("Start"),
-        "end": st.column_config.TextColumn("End"),
-    }
-    edited_exp = st.data_editor(
-        exp_df_rows,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config=exp_config,
-        hide_index=True,
-        key="exp_editor",
-    )
-
-    # Bullet editors (one expander per experience row)
-    bullets_per_row: list[list[str]] = []
-    for i, row in enumerate(edited_exp):
-        title = row.get("title") or "(untitled)"
-        company = row.get("company") or "(unknown company)"
-        original = (
-            profile.experience[i].bullets
-            if i < len(profile.experience)
-            else []
-        )
-        with st.expander(f"📝 {title} @ {company} — bullets"):
-            raw = st.text_area(
-                "One achievement per line",
-                value=_bullets_to_text(original),
-                height=110,
-                key=f"exp_bullets_{i}",
-            )
-        bullets_per_row.append(_text_to_bullets(raw))
-
-    st.divider()
-
-    st.subheader("🎓 Education")
-    edu_rows: list[dict] = []
-    for e in profile.education:
-        edu_rows.append(
-            {
-                "degree": e.degree or "",
-                "field": e.field or "",
-                "institution": e.institution or "",
-                "start": e.start or "",
-                "end": e.end or "",
-                "grade": e.grade or "",
-            }
-        )
-    edited_edu = st.data_editor(
-        edu_rows,
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        key="edu_editor",
-    )
-
-    st.divider()
-
-    st.subheader("🚀 Projects")
-    proj_rows: list[dict] = []
-    for p in profile.projects:
-        proj_rows.append(
-            {
-                "name": p.name or "",
-                "description": p.description or "",
-                "tech": ", ".join(p.tech),
-            }
-        )
-    proj_config = {
-        "name": st.column_config.TextColumn("Name"),
-        "description": st.column_config.TextColumn("Description"),
-        "tech": st.column_config.TextColumn("Tech (comma separated)"),
-    }
-    edited_proj = st.data_editor(
-        proj_rows,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config=proj_config,
-        hide_index=True,
-        key="proj_editor",
-    )
-
-st.divider()
-
-cc1, cc2 = st.columns(2)
-with cc1:
-    st.subheader("🏆 Certifications")
-    certs_raw = st.text_area(
-        "One per line or comma separated",
-        value="\n".join(profile.certifications),
-        height=90,
-    )
-with cc2:
-    st.subheader("🌍 Languages")
-    langs_raw = st.text_area(
-        "One per line or comma separated",
-        value="\n".join(profile.languages),
-        height=90,
-    )
+with t_act:
+    st.caption("Leadership, committees, volunteering, exchange programmes.")
+    act_cols = ["title", "organization", "role", "start", "end"]
+    act_rows = _table(_rows(profile.activities, act_cols), act_cols, {}, key=f"act_{v}")
+    act_bullets = _bullet_editors(act_rows, profile.activities, "title", "actb")
 
 
 # ---------------------------------------------------------------------------
-# Save button
+# Save
 # ---------------------------------------------------------------------------
 
-
-def _csv_or_lines_to_list(raw: str) -> list[str]:
-    # Accept either commas or newlines as separators
-    if "," in raw and "\n" not in raw:
-        return _split_csv(raw)
-    combined = [part.strip() for line in raw.splitlines() for part in line.split(",")]
-    return [s for s in combined if s]
-
-
-def _collect_profile_from_ui() -> Profile:
-    experiences: list[ExperienceEntry] = []
-    for i, row in enumerate(edited_exp):
-        bullets = bullets_per_row[i] if i < len(bullets_per_row) else []
-        experiences.append(
-            ExperienceEntry(
-                title=row.get("title") or None,
-                company=row.get("company") or None,
-                location=row.get("location") or None,
-                start=row.get("start") or None,
-                end=row.get("end") or None,
-                bullets=bullets,
-            )
-        )
-    educations: list[EducationEntry] = []
-    for row in edited_edu:
-        educations.append(
-            EducationEntry(
-                degree=row.get("degree") or None,
-                field=row.get("field") or None,
-                institution=row.get("institution") or None,
-                start=row.get("start") or None,
-                end=row.get("end") or None,
-                grade=row.get("grade") or None,
-            )
-        )
-    projects: list[ProjectEntry] = []
-    for row in edited_proj:
-        projects.append(
-            ProjectEntry(
-                name=row.get("name") or None,
-                description=row.get("description") or None,
-                tech=_split_csv(row.get("tech") or ""),
-            )
-        )
-
+def _collect() -> Profile:
     return Profile(
-        name=name or None,
-        email=email or None,
-        phone=phone or None,
-        location=location or None,
-        summary=summary or None,
+        name=_clean(name),
+        headline=_clean(headline),
+        email=_clean(email),
+        phone=_clean(phone),
+        location=_clean(location),
+        links=Links(github=_clean(github), linkedin=_clean(linkedin), portfolio=_clean(portfolio)),
+        summary=_clean(summary),
         skills=SkillGroup(
             technical=_split_csv(tech_raw),
             tools=_split_csv(tools_raw),
             soft=_split_csv(soft_raw),
         ),
-        experience=experiences,
-        education=educations,
-        projects=projects,
-        certifications=_csv_or_lines_to_list(certs_raw),
-        languages=_csv_or_lines_to_list(langs_raw),
+        experience=[ExperienceEntry(**r, bullets=exp_bullets[i]) for i, r in enumerate(exp_rows)],
+        education=[EducationEntry(**r, bullets=edu_bullets[i]) for i, r in enumerate(edu_rows)],
+        projects=[
+            ProjectEntry(**{k: val for k, val in r.items() if k != "tech"},
+                         tech=_split_csv(r.get("tech") or ""))
+            for r in proj_rows
+        ],
+        activities=[ActivityEntry(**r, bullets=act_bullets[i]) for i, r in enumerate(act_rows)],
+        certifications=_split_lines(certs_raw),
+        languages=_split_lines(langs_raw),
     )
 
 
+st.divider()
 if st.button("💾 Save profile", type="primary"):
     try:
-        new_prof = _collect_profile_from_ui()
+        new_prof = _collect()
     except ValidationError as e:
-        st.error(f"❌ Invalid profile fields: {e}")
-        st.stop()
-    try:
-        db_mod.save_profile(new_prof, raw_text=st.session_state.resume_raw_text)
-    except Exception as e:  # noqa: BLE001
-        st.error(f"❌ Failed to save: {e}")
+        st.error(f"❌ Invalid fields: {e}")
     else:
-        st.session_state.profile = new_prof
-        st.success("✅ Profile saved!")
-        st.balloons()
+        try:
+            db_mod.save_profile(new_prof, raw_text=ss.resume_text)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"❌ Failed to save: {e}")
+        else:
+            ss.profile = new_prof
+            ss.unsaved = False
+            st.success("✅ Profile saved!")
