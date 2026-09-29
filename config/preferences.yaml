@@ -1,0 +1,37 @@
+# SaRadar user preferences
+# Edit these to change search behavior, filters, and alert thresholds.
+
+# Target job roles (case-sensitive, matched against job titles)
+roles:
+  - AI Engineer
+  - Data Scientist
+  - Machine Learning Engineer
+  - Data Engineer
+  - Data Analyst
+
+# Geographic areas of interest (Malaysia)
+areas:
+  - Kuala Lumpur
+  - Selangor
+  - Putrajaya
+
+# Maximum commute distance (used for lat/lng-based filtering)
+max_distance_km: 40
+
+# Job titles containing any of these (case-insensitive) will be skipped
+skip_title_keywords:
+  - intern
+  - internship
+  - trainee
+  - head
+  - director
+  - principal
+
+# Minimum fit score (0-100) required to trigger a Telegram alert
+fit_alert_threshold: 70
+
+# LLM provider fallback order. First with valid key is used, then next on failure.
+# Supported: groq, gemini, litellm
+llm_fallback_order:
+  - groq
+  - gemini

@@ -1,0 +1,13 @@
+streamlit
+fastapi
+uvicorn
+python-dotenv
+pydantic
+pyyaml
+requests
+groq
+google-genai
+litellm
+pdfplumber
+sentence-transformers
+pytest
