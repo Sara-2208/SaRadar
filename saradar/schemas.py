@@ -58,7 +58,12 @@ _STRING_LIST_FIELDS = {"technical", "tools", "soft", "tech", "certifications", "
                        "must_have_skills", "nice_to_have_skills"}
 _TEXT_LIST_FIELDS = {"bullets", "responsibilities"}
 _OBJECT_FIELDS = {"skills", "links"}
-
+_SCALAR_TEXT_FIELDS = {
+    "name", "headline", "email", "phone", "location", "summary",
+    "title", "company", "degree", "field", "institution", "start", "end",
+    "grade", "role", "result", "level", "date", "description", "organization",
+    "work_mode", "employment_type", "seniority",
+}
 
 def _normalize_before(data: Any) -> Any:
     """Clean messy LLM output before Pydantic validates it."""
@@ -88,6 +93,15 @@ def _normalize_before(data: Any) -> Any:
         result["links"] = links
 
     for key, value in list(result.items()):
+                # Text fields sent as a list / number by the LLM -> plain text
+        if key in _SCALAR_TEXT_FIELDS:
+            if isinstance(value, list):
+                joined = ", ".join(str(v).strip() for v in value if v is not None and str(v).strip())
+                result[key] = joined or None
+                continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result[key] = str(value)
+                continue
         if value is None:
             if key in _OBJECT_LIST_FIELDS | _STRING_LIST_FIELDS | _TEXT_LIST_FIELDS:
                 result[key] = []
@@ -239,3 +253,13 @@ class JobRequirements(_Base):
             return v
         match = re.search(r"\d+", str(v))
         return int(match.group()) if match else None
+
+    
+    @field_validator("education", mode="before")
+    @classmethod
+    def _education_as_text(cls, v: Any) -> Any:
+        """Job education is text; LLM sometimes sends [] or a list."""
+        if isinstance(v, list):
+            joined = ", ".join(str(x).strip() for x in v if x is not None and str(x).strip())
+            return joined or None
+        return v

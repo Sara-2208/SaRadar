@@ -48,3 +48,13 @@ def test_empty_jd_raises():
     import pytest
     with pytest.raises(ValueError):
         rx.extract_requirements("   ")
+
+
+
+def test_list_and_number_text_fields_are_coerced():
+    from saradar.schemas import JobRequirements, Profile
+    req = JobRequirements.model_validate({"education": [], "seniority": ["Mid"]})
+    assert req.education is None
+    assert req.seniority == "Mid"
+    prof = Profile.model_validate({"education": [{"degree": "BSc", "grade": 3.72}]})
+    assert prof.education[0].grade == "3.72"
