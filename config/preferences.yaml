@@ -30,8 +30,18 @@ skip_title_keywords:
 # Minimum fit score (0-100) required to trigger a Telegram alert
 fit_alert_threshold: 70
 
-# LLM provider fallback order. First with valid key is used, then next on failure.
-# Supported: groq, gemini, litellm
-llm_fallback_order:
-  - groq
-  - gemini
+# LLM configuration
+# Model tiers: fast (cheap/low-latency streaming), smart (deep reasoning).
+# Each entry = "provider/model-id"; tried in order with automatic fallback.
+# Supported providers: groq, gemini
+llm:
+  fast:
+    - groq/openai/gpt-oss-20b
+    - gemini/gemini-3.5-flash-lite
+    - gemini/gemini-2.5-flash
+  smart:
+    - groq/openai/gpt-oss-120b
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-2.5-flash
+  timeout_seconds: 30
+  max_retries: 1
