@@ -1,65 +1,96 @@
-"""Job description requirements extractor.
+"""Job description -> structured JobRequirements (Phase 3A).
 
-Turns free-text job descriptions into structured requirements: required vs
-nice-to-have skills, years of experience, education level, location/work-mode
-constraints, etc.
+The LLM only extracts what is written. Known metadata (title, company,
+location from the job API) always wins over LLM guesses.
 """
 
-from typing import Any, Dict, List
+from __future__ import annotations
 
-# TODO: Use LLM extract_json with a strict schema for consistent output
-# TODO: Add a rule-based fallback if LLM is unavailable
-# TODO: Cache extraction results keyed by JD hash
+import logging
+from typing import List, Optional, Tuple
 
+from pydantic import ValidationError
 
-def extract_requirements(jd_text: str) -> Dict[str, Any]:
-    """Extract structured requirements from a job description.
+from saradar import llm as llm_mod
+from saradar.schemas import JobRequirements
 
-    Args:
-        jd_text: Raw job description text.
+logger = logging.getLogger("saradar.requirements")
 
-    Returns:
-        Dict with keys such as:
-        - required_skills: List[str]
-        - nice_to_have_skills: List[str]
-        - min_years_experience: int | None
-        - education_level: str | None
-        - work_mode: "remote" | "hybrid" | "onsite" | None
-        - certifications: List[str]
-        - domain_keywords: List[str]
-    """
-    # TODO: Design a robust JSON schema for extraction
-    # TODO: Prompt the LLM with the schema + examples
-    # TODO: Validate output and retry on schema mismatch
-    raise NotImplementedError("extract_requirements() is a placeholder. #TODO: LLM-based structured extraction")
+# JDs shorter than this are usually summaries (e.g. JobLeads, Trabajo snippets)
+MIN_FULL_JD_CHARS = 600
 
-
-def normalize_skill(skill: str) -> str:
-    """Normalize a skill name for matching.
-
-    Examples: "Python 3" -> "python", "PyTorch / Torch" -> "pytorch".
-
-    Args:
-        skill: Raw skill string from extraction.
-
-    Returns:
-        Lowercased, canonicalized skill name.
-    """
-    # TODO: Build a skill alias map (e.g. "torch" <-> "pytorch")
-    # TODO: Use fuzzy matching against skills taxonomy
-    raise NotImplementedError("normalize_skill() is a placeholder. #TODO: skill normalization + alias map")
+_SYSTEM = (
+    "You extract hiring requirements from a job description. Use ONLY what is "
+    "written; never invent skills or requirements. "
+    "must_have_skills = concrete skills, tools or technologies stated as required. "
+    "nice_to_have_skills = stated as preferred, a plus, an advantage, a bonus, or nice to have. "
+    "Keep skill names short (e.g. 'Python', 'LangChain', 'AWS'), never full sentences. "
+    "seniority = one of Intern, Entry, Junior, Mid, Senior, Lead, Manager, or null if unclear. "
+    "years_experience_min = minimum years required as an integer, or null. "
+    "work_mode = On-site, Hybrid, Remote, or null. "
+    "employment_type = Full-time, Part-time, Contract, Internship, or null. "
+    "responsibilities = up to 8 short points in the original wording. "
+    "Respond in JSON only with exactly these keys: "
+    '{"title": null, "company": null, "location": null, "work_mode": null, '
+    '"employment_type": null, "seniority": null, "years_experience_min": null, '
+    '"must_have_skills": [], "nice_to_have_skills": [], "education": null, '
+    '"responsibilities": []}'
+)
 
 
-def skills_match_score(candidate_skills: List[str], required_skills: List[str]) -> float:
-    """Compute how many required skills the candidate has.
+def _dedupe(items: List[str]) -> List[str]:
+    seen, out = set(), []
+    for item in items:
+        key = item.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(item.strip())
+    return out
 
-    Args:
-        candidate_skills: Normalized skills from the candidate profile.
-        required_skills: Normalized required skills from the JD.
 
-    Returns:
-        Float in [0, 1] representing the fraction of required skills covered.
-    """
-    # TODO: Use sentence-transformer embeddings for semantic (not just exact) match
-    # TODO: Weight mission-critical skills higher
-    raise NotImplementedError("skills_match_score() is a placeholder. #TODO: semantic skill overlap scoring")
+def _validate(raw) -> JobRequirements:
+    return JobRequirements.model_validate(raw if isinstance(raw, dict) else {})
+
+
+def extract_requirements(
+    jd_text: str,
+    title: Optional[str] = None,
+    company: Optional[str] = None,
+    location: Optional[str] = None,
+) -> Tuple[JobRequirements, llm_mod.LLMResult]:
+    """Extract structured requirements from a job description."""
+    if not jd_text or not jd_text.strip():
+        raise ValueError("Empty job description, cannot extract requirements.")
+
+    jd = jd_text.strip()
+    hints = "".join(
+        f"KNOWN {label}: {value}\n"
+        for label, value in (("TITLE", title), ("COMPANY", company), ("LOCATION", location))
+        if value
+    )
+    user = f"{hints}JOB DESCRIPTION:\n{jd}\n\nReturn the JSON object now."
+
+    raw, result = llm_mod.complete_json(user, system=_SYSTEM, tier="fast")
+    try:
+        req = _validate(raw)
+    except ValidationError as err:
+        logger.warning("Requirements failed validation, retrying once")
+        raw, result = llm_mod.complete_json(
+            f"{user}\n\nPrevious JSON failed validation: {err.errors()!r}. Fix it.",
+            system=_SYSTEM,
+            tier="fast",
+        )
+        req = _validate(raw)
+
+    must = _dedupe(req.must_have_skills)
+    must_lower = {m.lower() for m in must}
+    nice = [s for s in _dedupe(req.nice_to_have_skills) if s.lower() not in must_lower]
+
+    known = {k: v for k, v in {"title": title, "company": company, "location": location}.items() if v}
+    req = req.model_copy(update={
+        **known,
+        "must_have_skills": must,
+        "nice_to_have_skills": nice,
+        "jd_quality": "full" if len(jd) >= MIN_FULL_JD_CHARS else "partial",
+    })
+    return req, result

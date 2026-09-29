@@ -12,8 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
-
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 class ScannedPDFError(ValueError):
     """Raised when a PDF has no extractable text (likely a scan)."""
@@ -55,8 +54,9 @@ def mask_phone(phone: str) -> str:
 # ---------------------------------------------------------------------------
 
 _OBJECT_LIST_FIELDS = {"experience", "education", "projects", "activities"}
-_STRING_LIST_FIELDS = {"technical", "tools", "soft", "tech", "certifications", "languages"}
-_TEXT_LIST_FIELDS = {"bullets"}
+_STRING_LIST_FIELDS = {"technical", "tools", "soft", "tech", "certifications", "languages",
+                       "must_have_skills", "nice_to_have_skills"}
+_TEXT_LIST_FIELDS = {"bullets", "responsibilities"}
 _OBJECT_FIELDS = {"skills", "links"}
 
 
@@ -209,3 +209,33 @@ class Profile(_Base):
         if d.get("phone"):
             d["phone"] = mask_phone(d["phone"])
         return d
+
+# ---------------------------------------------------------------------------
+# Job requirements (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class JobRequirements(_Base):
+    """Structured requirements extracted from a job description."""
+
+    title: str | None = None
+    company: str | None = None
+    location: str | None = None
+    work_mode: str | None = None          # On-site / Hybrid / Remote
+    employment_type: str | None = None    # Full-time / Part-time / Contract / Internship
+    seniority: str | None = None          # Intern / Entry / Junior / Mid / Senior / Lead / Manager
+    years_experience_min: int | None = None
+    must_have_skills: list[str] = []
+    nice_to_have_skills: list[str] = []
+    education: str | None = None
+    responsibilities: list[str] = []
+    jd_quality: str = "full"              # "full" or "partial" (short summary JDs)
+
+    @field_validator("years_experience_min", mode="before")
+    @classmethod
+    def _parse_years(cls, v: Any) -> Any:
+        """'3-5 years' -> 3, '2+' -> 2, None stays None."""
+        if v is None or isinstance(v, int):
+            return v
+        match = re.search(r"\d+", str(v))
+        return int(match.group()) if match else None

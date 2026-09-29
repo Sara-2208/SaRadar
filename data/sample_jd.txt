@@ -1,0 +1,14 @@
+About the job
+The Machine Learning/AI Specialist develops and implements AI-driven solutions that transform raw data into actionable insights and decision-support tools for business and operational stakeholders. The role works closely with cross-functional teams to identify high-impact use cases, design appropriate ML or GenAI approaches, and ensure solutions are practical, explainable, and deployable. This supports the business by improving efficiency, enhancing decision quality, and enabling scalable data-driven innovation aligned with strategic priorities.
+Requirements:
+Possess a Bachelor's Degree in Artificial Intelligence, Machine Learning, Computer Science, Data Science, or a related discipline.
+Minimum 3 years of hands-on experience in AI/ML solution development, including the design, development, and deployment of AI/ML models.
+Experience in application integration using APIs and integrating AI/ML solutions into enterprise applications or production environments.
+Strong knowledge of data analytics, including data preparation, analysis, and deriving insights from structured and unstructured data.
+
+Responsibilities:
+Design, develop, and deploy Machine Learning (ML), Computer Vision, and Generative AI (GenAI) solutions to address business challenges and improve operational efficiency.
+Build, optimize, and evaluate AI/ML models, including Computer Vision and Retrieval-Augmented Generation (RAG) solutions, ensuring accuracy, scalability, and business value.
+Translate business requirements and complex datasets into scalable AI solutions, recommending use cases that enhance customer experience, automation, and decision-making.
+Collaborate with cross-functional teams to integrate, deploy, and optimize AI models in production environments through APIs and deployment pipelines.
+Monitor, maintain, and continuously improve AI solutions by enhancing model performance, reliability, and operational efficiency.
