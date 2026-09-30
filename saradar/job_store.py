@@ -1,18 +1,14 @@
-"""SQLite storage for jobs + API usage (Phase 4A).
-
-Uses the same database as the profile: data/saradar.db
-"""
+"""Job + API usage storage (SQLite locally, Supabase Postgres in the cloud)."""
 
 from __future__ import annotations
 
 import re
-import sqlite3
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "saradar.db"
+from saradar import storage
+
 FULL_JD_CHARS = 600
 
 _JOB_COLUMNS = {
@@ -23,7 +19,9 @@ _JOB_COLUMNS = {
     "publisher": "TEXT", "posted_at": "TEXT", "employment_type": "TEXT",
     "external_id": "TEXT", "requirements_json": "TEXT", "fit_json": "TEXT",
     "fit_label": "TEXT", "status": "TEXT DEFAULT 'new'", "updated_at": "TEXT",
+    "notified_at": "TEXT",
 }
+_READY: set = set()
 
 
 def _now() -> str:
@@ -34,28 +32,20 @@ def month_key() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
-    path = Path(db_path) if db_path else DEFAULT_DB
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    _init(conn)
+def connect(db_path: Optional[str] = None) -> storage.Conn:
+    conn = storage.connect(db_path)
+    key = storage.target(db_path)
+    if key not in _READY:
+        storage.ensure_table(conn, "jobs", "hash TEXT PRIMARY KEY", _JOB_COLUMNS)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS api_usage (provider TEXT, month TEXT, "
+            "count INTEGER DEFAULT 0, PRIMARY KEY (provider, month))"
+        )
+        if conn.kind == "pg":
+            conn.execute("ALTER TABLE api_usage ENABLE ROW LEVEL SECURITY")
+        conn.commit()
+        _READY.add(key)
     return conn
-
-
-def _init(conn: sqlite3.Connection) -> None:
-    cols = ", ".join(f"{name} {kind}" for name, kind in _JOB_COLUMNS.items())
-    conn.execute(f"CREATE TABLE IF NOT EXISTS jobs (hash TEXT PRIMARY KEY, {cols})")
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
-    for name, kind in _JOB_COLUMNS.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {kind}")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS api_usage ("
-        "provider TEXT, month TEXT, count INTEGER DEFAULT 0, "
-        "PRIMARY KEY (provider, month))"
-    )
-    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +58,6 @@ def norm_title(title: str) -> str:
 
 
 def similar_title(a: str, b: str) -> bool:
-    """'AI Engineer: GenAI, ML' ~ 'AI Engineer: GenAI, ML & Cloud Solutions'."""
     a, b = norm_title(a), norm_title(b)
     if not a or not b:
         return False
@@ -77,12 +66,16 @@ def similar_title(a: str, b: str) -> bool:
     return SequenceMatcher(None, a, b).ratio() >= 0.85
 
 
-def _find_similar(conn: sqlite3.Connection, company: str, title: str) -> Optional[sqlite3.Row]:
+def _find_similar(conn: storage.Conn, company: str, title: str):
     rows = conn.execute(
         "SELECT hash, title, description FROM jobs WHERE lower(company) = lower(?)",
         (company or "",),
     ).fetchall()
     return next((r for r in rows if similar_title(r["title"], title)), None)
+
+
+def _jd_status(description: Optional[str]) -> str:
+    return "full" if len(description or "") >= FULL_JD_CHARS else "partial"
 
 
 # ---------------------------------------------------------------------------
@@ -91,10 +84,8 @@ def _find_similar(conn: sqlite3.Connection, company: str, title: str) -> Optiona
 
 
 def upsert_jobs(jobs: List[Any], db_path: Optional[str] = None) -> List[Any]:
-    """Insert new jobs; update existing ones if we got a longer description.
-
-    Returns only the jobs that are NEW (never seen before).
-    """
+    """Insert new jobs; update existing ones if the description got longer.
+    Returns only NEW jobs."""
     new = []
     with connect(db_path) as conn:
         for j in jobs:
@@ -121,16 +112,11 @@ def upsert_jobs(jobs: List[Any], db_path: Optional[str] = None) -> List[Any]:
     return new
 
 
-def _jd_status(description: Optional[str]) -> str:
-    return "full" if len(description or "") >= FULL_JD_CHARS else "partial"
-
-
 def list_jobs(db_path: Optional[str] = None, only_new: bool = False, limit: int = 200) -> List[Dict[str, Any]]:
     where = "WHERE is_new = 1" if only_new else ""
     with connect(db_path) as conn:
         rows = conn.execute(
-            f"SELECT * FROM jobs {where} "
-            "ORDER BY (fit IS NULL), fit DESC, posted_at DESC LIMIT ?",
+            f"SELECT * FROM jobs {where} ORDER BY (fit IS NULL), fit DESC, posted_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -175,6 +161,25 @@ def add_usage(provider: str, n: int = 1, month: Optional[str] = None, db_path: O
     with connect(db_path) as conn:
         conn.execute(
             "INSERT INTO api_usage (provider, month, count) VALUES (?, ?, ?) "
-            "ON CONFLICT(provider, month) DO UPDATE SET count = count + excluded.count",
+            "ON CONFLICT (provider, month) DO UPDATE SET count = api_usage.count + excluded.count",
             (provider, month or month_key(), n),
         )
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+
+def unnotified_scored(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE fit IS NOT NULL AND notified_at IS NULL ORDER BY fit DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_notified(hashes: List[str], db_path: Optional[str] = None) -> None:
+    with connect(db_path) as conn:
+        conn.executemany("UPDATE jobs SET notified_at = ? WHERE hash = ?",
+                         [(_now(), h) for h in hashes])

@@ -11,3 +11,4 @@ litellm
 pdfplumber
 sentence-transformers
 pytest
+psycopg[binary]

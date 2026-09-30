@@ -1,88 +1,84 @@
-"""Notification module.
+"""Telegram notifications: daily job digest (auto-split, HTML formatted)."""
 
-Sends job fit alerts via Telegram bot. Never auto-applies — alerts only.
-"""
+from __future__ import annotations
 
-from typing import Any, Dict, List
+import html
+import os
+from typing import Any, Dict, List, Optional
 
-# TODO: Implement Telegram message formatting (MarkdownV2, escape special chars)
-# TODO: Add message rate limiting (e.g. max 20/day) to avoid bot bans
-# TODO: Add deduplication: don't alert the same job hash twice within N days
-# TODO: Support other channels later (email, Discord) via plugin pattern
+import requests
+
+from saradar.config import get_api_key
+
+TELEGRAM_LIMIT = 4000
+ICON = {"Strong fit": "🟢", "Fair fit": "🟠", "Stretch": "🔴"}
+HEADER = "📡 <b>SaRadar daily</b>"
 
 
-class TelegramNotifier:
-    """Sends messages via the Telegram Bot API."""
+def _key(name: str) -> Optional[str]:
+    return get_api_key(name) or os.getenv(name)
 
-    def __init__(self, bot_token: str | None = None, chat_id: str | None = None):
-        """Initialize the notifier with credentials.
 
-        Args:
-            bot_token: Telegram bot token (from .env TELEGRAM_BOT_TOKEN).
-            chat_id: Target chat ID (from .env TELEGRAM_CHAT_ID).
-        """
-        # TODO: Import from config / env if not provided
-        # TODO: Validate non-empty at init time with clear error message
-        self.bot_token = bot_token
-        self.chat_id = chat_id
-        self._last_alerted_hashes: set = set()  # in-memory dedupe, TODO: persist to DB
+def _job_line(i: int, j: Dict[str, Any]) -> str:
+    icon = ICON.get(j.get("fit_label"), "⚪")
+    title = html.escape(j.get("title") or "")
+    company = html.escape(j.get("company") or "")
+    area = html.escape(j.get("city") or j.get("state") or "?")
+    short = " ⚠️ short JD" if j.get("jd_status") == "partial" else ""
+    link = f' · <a href="{html.escape(j["url"], quote=True)}">Open</a>' if j.get("url") else ""
+    return f"{i}. {icon} <b>{int(j['fit'])}%</b> {title}{short}\n    {company} · {area}{link}"
 
-    def send_message(self, text: str, parse_mode: str = "MarkdownV2") -> bool:
-        """Send a plain text message to the configured chat.
 
-        Args:
-            text: Message text (must be pre-escaped for chosen parse_mode).
-            parse_mode: Telegram parse mode: "MarkdownV2", "HTML", or None.
+def build_digest(
+    jobs: List[Dict[str, Any]],
+    min_fit: int = 50,
+    max_jobs: int = 0,
+    show_stretch_count: bool = True,
+) -> List[str]:
+    """Build message chunks. Empty list = nothing worth sending."""
+    scored = sorted([j for j in jobs if j.get("fit") is not None],
+                    key=lambda j: j["fit"], reverse=True)
+    listed = [j for j in scored if j["fit"] >= min_fit]
+    below = len(scored) - len(listed)
+    if not listed:
+        return []
 
-        Returns:
-            True on success, False on failure.
-        """
-        # TODO: Call Telegram Bot API via requests.post
-        # TODO: Handle errors (429 too many requests, 403 blocked, etc.)
-        # TODO: Log failures with full context for debugging
-        raise NotImplementedError("send_message() is a placeholder. #TODO: Telegram Bot API call")
+    hidden = 0
+    if max_jobs and max_jobs > 0 and len(listed) > max_jobs:
+        hidden = len(listed) - max_jobs
+        listed = listed[:max_jobs]
 
-    def format_job_alert(self, job: Dict[str, Any], score: int, explanation: str) -> str:
-        """Format a scored job into a human-readable Telegram alert.
+    blocks = [_job_line(i, j) for i, j in enumerate(listed, 1)]
+    if hidden:
+        blocks.append(f"+{hidden} more at {min_fit}%+ in SaRadar")
+    if show_stretch_count and below:
+        blocks.append(f"+{below} below {min_fit}%. Open SaRadar to see all.")
 
-        Args:
-            job: Job record (title, company, city, url, ...).
-            score: 0-100 fit score.
-            explanation: 2-3 sentence fit explanation from scorer.
+    chunks: List[str] = []
+    current = f"{HEADER}: {len(scored)} new jobs, {len(listed) + hidden} at {min_fit}%+"
+    for block in blocks:
+        if len(current) + len(block) + 2 > TELEGRAM_LIMIT:
+            chunks.append(current)
+            current = f"{HEADER} (cont.)"
+        current += "\n\n" + block
+    chunks.append(current)
+    return chunks
 
-        Returns:
-            Pre-escaped MarkdownV2 string ready to send.
-        """
-        # TODO: Include 🔥 emoji for high-fit, title, company, location, score badge
-        # TODO: Include deep-link URL to job posting
-        # TODO: Escape ALL Telegram reserved chars: _ * [ ] ( ) ~ ` > # + - = | { } . !
-        raise NotImplementedError("format_job_alert() is a placeholder. #TODO: MarkdownV2 template + escaping")
 
-    def alert_job(self, job: Dict[str, Any], score: int, explanation: str) -> bool:
-        """Format + send a job alert, with dedupe.
+def empty_message() -> str:
+    return f"{HEADER}: no new jobs today."
 
-        Args:
-            job: Job record.
-            score: 0-100 fit score.
-            explanation: Fit explanation.
 
-        Returns:
-            True if sent, False if skipped (dedupe) or failed.
-        """
-        # TODO: Check dedupe set first
-        # TODO: Call format_job_alert, then send_message
-        # TODO: Record hash on success
-        raise NotImplementedError("alert_job() is a placeholder. #TODO: alert pipeline with dedupe")
-
-    def send_daily_digest(self, jobs: List[Dict[str, Any]]) -> bool:
-        """Send a daily digest of multiple high-fit jobs in one message.
-
-        Args:
-            jobs: List of (job, score) tuples or enriched job dicts.
-
-        Returns:
-            True on success.
-        """
-        # TODO: Compose a list digest with top fits first
-        # TODO: Chunk if exceeds Telegram 4096 char limit
-        raise NotImplementedError("send_daily_digest() is a placeholder. #TODO: daily digest composition")
+def send_telegram(text: str, token: Optional[str] = None, chat_id: Optional[str] = None) -> None:
+    token = token or _key("TELEGRAM_BOT_TOKEN")
+    chat_id = chat_id or _key("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env")
+    resp = requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+              "disable_web_page_preview": "true"},
+        timeout=20,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Telegram error {resp.status_code}: {resp.text[:200]}")
