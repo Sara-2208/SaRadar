@@ -19,7 +19,7 @@ areas:
 max_distance_km: 40
 
 # Job titles containing any of these (case-insensitive) will be skipped
-skip_title_keywords: [intern, internship, trainee, head, director, principal, senior manager, leader]
+skip_title_keywords: [intern, internship, trainee, head, director, principal, senior manager, leader, senior, sr, lead, manager]
 
 # Minimum fit score (0-100) required to trigger a Telegram alert
 fit_alert_threshold: 70
@@ -49,10 +49,16 @@ job_search:
   url: https://jsearch.p.rapidapi.com/search-v2
   host: jsearch.p.rapidapi.com
   country: my
-  date_posted: week       # today, 3days, week, month
+  date_posted: 3days       # today, 3days, week, month
   monthly_budget: 180     # free plan = 200, keep 20 spare
   queries:
     - AI engineer in Kuala Lumpur, Malaysia
     - data scientist in Kuala Lumpur, Malaysia
     - machine learning engineer in Selangor, Malaysia
     - data engineer in Kuala Lumpur, Malaysia
+    
+notify:
+  min_fit: 50             # list jobs at or above this
+  max_jobs: 0             # 0 = no limit (auto-split messages)
+  show_stretch_count: true
+  send_when_empty: false  # true = send "no new jobs today"
